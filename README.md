@@ -1,10 +1,10 @@
-# Presenter Shortcut
+# Vibe Coding Presenter
 
 [English](#english) | [中文](#中文)
 
 ## English
 
-Presenter Shortcut turns a simple wireless presenter into a voice-first AI control surface for Windows.
+Vibe Coding Presenter turns a cheap wireless presenter remote into a voice-first vibe coding controller for Windows: talk to your AI coding agent and send prompts from across the room, without touching the keyboard.
 
 The core idea is simple: before coding agents and AI writing tools, the most important productivity shortcut was often `Ctrl+C` then `Ctrl+V`. In a voice-first AI workflow, the new high-frequency loop is becoming:
 
@@ -18,11 +18,11 @@ Or, in shortcut form:
 Ctrl+Shift+D + Enter
 ```
 
-This project maps a presenter remote's Up/Down buttons into that loop, so you can talk to ChatGPT, Codex, or PRISM with much less mouse and keyboard use.
+This project maps a presenter remote's Up/Down buttons into that loop, so you can talk to ChatGPT, Codex, Claude, or PRISM with much less mouse and keyboard use.
 
 ### What it does
 
-Presenter Shortcut is a lightweight Windows tray app written in C#/.NET Framework. It listens for double-presses from a presenter remote that sends `ArrowUp` and `ArrowDown` keyboard events.
+Vibe Coding Presenter is a lightweight Windows tray app written in C#/.NET Framework. It listens for double-presses from a presenter remote that sends `ArrowUp` and `ArrowDown` keyboard events.
 
 - Double Up starts or stops voice input.
 - Double Down sends the message. In ChatGPT, Codex, Claude, and PRISM, the app first tries to click the real `Send` button through Windows UI Automation, then falls back to `Enter`.
@@ -42,7 +42,7 @@ This matches ChatGPT web dictation, where `Ctrl+Shift+D` behaves like a start/st
 
 #### Codex desktop app
 
-Codex desktop uses `Ctrl+Shift+D` as a hold-to-dictate shortcut, not a normal toggle. Presenter Shortcut adapts to that:
+Codex desktop uses `Ctrl+Shift+D` as a hold-to-dictate shortcut, not a normal toggle. Vibe Coding Presenter adapts to that:
 
 - First Double Up presses and holds `Ctrl+Shift+D`.
 - Second Double Up releases `Ctrl+Shift+D`.
@@ -54,7 +54,7 @@ Recent Codex desktop builds may identify their foreground process as `ChatGPT` i
 
 #### PRISM web
 
-PRISM's built-in voice mode may not always work reliably. For PRISM, Presenter Shortcut uses Windows voice typing:
+PRISM's built-in voice mode may not always work reliably. For PRISM, Vibe Coding Presenter uses Windows voice typing:
 
 - Double Up finds and focuses the `Ask anything` input box, then sends `Win+H`.
 - Double Down clicks the `Send` button or falls back to `Enter`, waits for the assistant to finish, then clicks `Compile` to refresh the PDF pane.
@@ -70,10 +70,22 @@ The auto-compile delay is configurable. The default is 25 seconds:
 
 #### Claude desktop app
 
-When the Claude desktop app is active:
+Claude's built-in dictation is not very reliable on Windows, so Vibe Coding Presenter uses Windows voice typing instead when the Claude desktop app is active:
 
-- Double Up sends `Ctrl+D`.
-- Double Down clicks the `Send` button, or falls back to `Enter`.
+- First Double Up sends `Win+H` to open Windows voice typing. Speak, and the text goes into the Claude input box.
+- Second Double Up sends `Win+H` again to stop voice typing, leaving the text in the box so you can review it.
+- Double Down while voice typing is open stops it, waits briefly (`ClaudeVoiceStopBeforeSendMs`, default 800 ms) so the last phrase lands, then clicks `Send` or falls back to `Enter`.
+- Double Down when voice typing is not open just clicks `Send` or falls back to `Enter`.
+
+To go back to Claude's own dictation shortcut (`Ctrl+D`), set:
+
+```json
+"ClaudeUseWindowsVoiceTyping": false
+```
+
+Windows voice typing may hear you but insert nothing when a third-party IME such as Sogou Pinyin is active in the Claude window. Switch that window to an English keyboard (`Win+Space`) or Microsoft Pinyin before dictating.
+
+This tool only runs on Windows. On a Mac, keep using Claude's built-in dictation directly.
 
 By default, this Claude rule is desktop-app-only and will not trigger inside common browsers, even if a browser tab title contains the word "Claude".
 
@@ -132,6 +144,9 @@ Sample behavior:
   "CodexHoldProcessNames": ["codex", "chatgpt"],
   "CodexHoldTitleContains": ["codex"],
   "ClaudeUpAction": "Ctrl+D",
+  "ClaudeUseWindowsVoiceTyping": true,
+  "ClaudeVoiceTypingAction": "Win+H",
+  "ClaudeVoiceStopBeforeSendMs": 800,
   "DownAction": "Enter",
   "PrismWindowTitleContains": ["prism"],
   "ClaudeWindowTitleContains": ["claude"],
@@ -160,6 +175,15 @@ If PRISM has a different browser title on your machine, add another keyword to `
 - While running, normal `ArrowUp` and `ArrowDown` keyboard events are intercepted globally. Use Pause or Exit from the tray menu when you need normal arrow-key navigation.
 - If the remote suddenly starts scrolling again, right-click the tray icon and choose Restart hook.
 - PRISM support depends on Windows UI Automation being able to see the input box.
+- Windows voice typing (used for Claude and PRISM) may not insert text while a third-party IME such as Sogou Pinyin is active. Use an English keyboard or Microsoft Pinyin.
+
+### Inspiration
+
+This project is one small piece of a fun trend: turning everyday devices into vibe coding inputs.
+
+Bilibili creator [林亦LYi](https://space.bilibili.com/4401694) tested eight unusual vibe coding input devices in the video [1元 vs 50万元 Vibe Coding：写代码可以多离谱？](https://www.bilibili.com/video/BV1kp8z6REGj/), and open-sourced the projects in [LYiHub/pub-ai-inputs](https://github.com/LYiHub/pub-ai-inputs): a Xiaomi TV remote, an Apple Watch, a PS5 DualSense controller, and even an AITO M9 (问界 M9) car used as a voice input for a coding agent.
+
+Vibe Coding Presenter brings the same idea to the most ordinary office gadget there is: the presentation clicker already sitting in your bag. No extra hardware, no driver, just two buttons mapped to "talk" and "send".
 
 ### Why this matters
 
@@ -171,7 +195,7 @@ Copy/paste was the signature gesture of desktop productivity. Voice-controlled A
 
 ## 中文
 
-Presenter Shortcut 是一个 Windows 托盘小工具，可以把普通翻页激光笔/演示遥控器变成 AI 语音控制器。
+Vibe Coding Presenter 是一个 Windows 托盘小工具，可以把普通翻页激光笔/演示遥控器变成 vibe coding 语音控制器：不用碰键盘，站着、坐远一点也能直接对 AI 编程助手说话、发送指令。
 
 核心想法很简单：在 Codex、ChatGPT 这类工具出现以前，最重要的生产力快捷键常常是 `Ctrl+C` 和 `Ctrl+V`。但在语音优先的 AI 工作流里，新的高频动作正在变成：
 
@@ -185,18 +209,18 @@ Presenter Shortcut 是一个 Windows 托盘小工具，可以把普通翻页激�
 Ctrl+Shift+D + Enter
 ```
 
-这个项目把演示遥控器的上/下键映射成这个循环，让你可以用更少的鼠标和键盘操作来控制 ChatGPT、Codex 和 PRISM。
+这个项目把演示遥控器的上/下键映射成这个循环，让你可以用更少的鼠标和键盘操作来控制 ChatGPT、Codex、Claude 和 PRISM。
 
 ### 它做什么
 
-Presenter Shortcut 是一个轻量的 Windows 托盘程序，用 C#/.NET Framework 编写。它监听遥控器发出的 `ArrowUp` 和 `ArrowDown` 键盘事件，并识别“双击”。
+Vibe Coding Presenter 是一个轻量的 Windows 托盘程序，用 C#/.NET Framework 编写。它监听遥控器发出的 `ArrowUp` 和 `ArrowDown` 键盘事件，并识别“双击”。
 
 - 向上双击：启动或停止语音输入。
 - 向下双击：发送消息。在 ChatGPT、Codex、Claude 和 PRISM 里，程序会先通过 Windows UI Automation 点击真正的 `Send` 按钮；如果找不到按钮，再回退到 `Enter`。
 - 单次上/下键会被吞掉，避免网页滚动或 Codex 回放历史输入。
 - 托盘菜单提供 Pause、Restart hook、Open log file 和 Exit。
 
-### 支持的三种场景
+### 支持的场景
 
 #### ChatGPT 网页版
 
@@ -209,7 +233,7 @@ ChatGPT 网页里，`Ctrl+Shift+D` 可以作为听写/语音输入的开始与�
 
 #### Codex 桌面应用
 
-Codex 桌面应用里的 `Ctrl+Shift+D` 不是普通 toggle，而是 hold-to-dictate，也就是需要按住才持续听写。Presenter Shortcut 对它做了适配：
+Codex 桌面应用里的 `Ctrl+Shift+D` 不是普通 toggle，而是 hold-to-dictate，也就是需要按住才持续听写。Vibe Coding Presenter 对它做了适配：
 
 - 第一次向上双击：按住 `Ctrl+Shift+D`。
 - 第二次向上双击：松开 `Ctrl+Shift+D`。
@@ -237,10 +261,22 @@ PRISM 自带的 voice mode 有时不稳定，所以这里改用 Windows 自带�
 
 #### Claude 桌面应用
 
-当前台是 Claude 桌面应用时：
+Claude 自带的语音输入在 Windows 上效果不太好，所以当前台是 Claude 桌面应用时，改用 Windows 自带的语音输入：
 
-- 向上双击发送 `Ctrl+D`。
-- 向下双击点击 `Send` 按钮；如果找不到按钮，再回退到 `Enter`。
+- 第一次向上双击：发送 `Win+H`，打开 Windows 语音输入。说话时文字会直接输入到 Claude 的输入框里。
+- 第二次向上双击：再发送一次 `Win+H`，结束语音输入，文字留在输入框里，可以先检查再发送。
+- 语音输入还开着时向下双击：先结束语音输入，稍等一下（`ClaudeVoiceStopBeforeSendMs`，默认 800 毫秒）让最后一句落到输入框里，然后点击 `Send` 按钮；找不到按钮时回退到 `Enter`。
+- 语音输入没开时向下双击：直接点击 `Send` 按钮或回退到 `Enter`。
+
+如果想换回 Claude 自带的语音快捷键（`Ctrl+D`），把配置改成：
+
+```json
+"ClaudeUseWindowsVoiceTyping": false
+```
+
+如果 Claude 窗口里用的是搜狗拼音这类第三方输入法，Windows 语音输入可能能听到声音但打不出字。说话前先按 `Win+空格` 把这个窗口切到英文键盘或微软拼音即可。
+
+这个工具只在 Windows 上运行。在 Mac 上直接使用 Claude 自带的语音输入即可。
 
 默认情况下，这条 Claude 规则只针对桌面应用生效；如果普通浏览器网页标题里有 Claude，它不会触发，避免误把 Edge/Chrome 里的 `Ctrl+D` 变成收藏网页。
 
@@ -299,6 +335,9 @@ config.sample.json
   "CodexHoldProcessNames": ["codex", "chatgpt"],
   "CodexHoldTitleContains": ["codex"],
   "ClaudeUpAction": "Ctrl+D",
+  "ClaudeUseWindowsVoiceTyping": true,
+  "ClaudeVoiceTypingAction": "Win+H",
+  "ClaudeVoiceStopBeforeSendMs": 800,
   "DownAction": "Enter",
   "PrismWindowTitleContains": ["prism"],
   "ClaudeWindowTitleContains": ["claude"],
@@ -327,9 +366,18 @@ config.sample.json
 - 程序运行时会全局拦截普通 `ArrowUp` 和 `ArrowDown`。如果你需要正常使用方向键，可以从托盘菜单 Pause 或 Exit。
 - 如果遥控器突然又开始滚动网页，右键托盘图标，点击 Restart hook。
 - PRISM 支持依赖 Windows UI Automation 能否识别页面输入框。
+- Windows 语音输入（Claude 和 PRISM 用的就是它）在搜狗拼音等第三方输入法下可能打不出字，请切到英文键盘或微软拼音。
+
+### 灵感来源
+
+这个项目是一个有趣潮流里的一小块：把身边各种设备变成 vibe coding 的输入工具。
+
+B 站 UP 主 [林亦LYi](https://space.bilibili.com/4401694) 在视频 [1元 vs 50万元 Vibe Coding：写代码可以多离谱？](https://www.bilibili.com/video/BV1kp8z6REGj/) 里测试了八种离谱的 vibe coding 输入设备，并把项目开源在 [LYiHub/pub-ai-inputs](https://github.com/LYiHub/pub-ai-inputs)：小米遥控器、Apple Watch、PS5 手柄，甚至把问界 M9 汽车变成了编程 agent 的语音输入。
+
+Vibe Coding Presenter 把同样的思路用在最普通的办公小物上：你包里本来就有的那支翻页激光笔。不用额外硬件，不用装驱动，两个按键分别对应“说话”和“发送”。
 
 ### 为什么这件事重要
 
 重点不是激光笔本身，而是交互方式正在改变。
 
-复制粘贴曾经是桌面生产力的标志性动作。语音控制 AI 正在创造新的标志性动作：打开语音，说出意图，发送。像 Presenter Shortcut 这样的小工具，就是把这个循环变成一个更自然、更快速、也更保护肩膀的物理动作。
+复制粘贴曾经是桌面生产力的标志性动作。语音控制 AI 正在创造新的标志性动作：打开语音，说出意图，发送。像 Vibe Coding Presenter 这样的小工具，就是把这个循环变成一个更自然、更快速、也更保护肩膀的物理动作。

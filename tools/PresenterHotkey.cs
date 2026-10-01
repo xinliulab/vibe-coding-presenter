@@ -23,11 +23,13 @@
 // After sending a PRISM prompt, the assistant may edit LaTeX without refreshing
 // the PDF pane. We can optionally wait, then invoke PRISM's Compile button.
 //
-// Claude desktop dictation uses Ctrl+D, so when that desktop app is
-// foreground we map double ArrowUp to Ctrl+D while keeping double ArrowDown as
-// Enter. For modern AI apps, double ArrowDown can also click the real Send
-// button via UI Automation before falling back to Enter. This survives app
-// updates where synthetic Enter no longer submits.
+// Claude desktop's built-in dictation (Ctrl+D) is weak on Windows, so by
+// default double ArrowUp toggles Windows voice typing (Win+H) instead. Double
+// ArrowDown while voice typing is open stops it first, waits for the last
+// phrase to land in the composer, then sends. Set ClaudeUseWindowsVoiceTyping
+// to false to go back to Ctrl+D. For modern AI apps, double ArrowDown can also
+// click the real Send button via UI Automation before falling back to Enter.
+// This survives app updates where synthetic Enter no longer submits.
 
 using System;
 using System.Collections;
@@ -82,6 +84,7 @@ internal static class PresenterHotkey
     private static KeyCombo _prismUpAction = KeyCombo.Parse("Win+H", null);
     private static KeyCombo _prismDownAction = KeyCombo.Parse("Enter", null);
     private static KeyCombo _claudeUpAction = KeyCombo.Parse("Ctrl+D", null);
+    private static KeyCombo _claudeVoiceTypingAction = KeyCombo.Parse("Win+H", null);
     private static string[] _prismTitleContains = new[] { "prism" };
     private static string[] _prismInputNameContains = new[] { "ask anything", "message", "prompt", "ask" };
     private static string[] _prismCompileButtonNameContains = new[] { "compile" };
@@ -92,6 +95,8 @@ internal static class PresenterHotkey
     private static string[] _codexHoldProcessNames = new[] { "codex", "chatgpt" };
     private static string[] _codexHoldTitleContains = new[] { "codex" };
     private static bool _claudeDesktopOnly = true;
+    private static bool _claudeUseWindowsVoiceTyping = true;
+    private static int _claudeVoiceStopBeforeSendMs = 800;
     private static int _prismFocusDelayMs = 150;
     private static bool _prismAutoCompileAfterEnter = true;
     private static int _prismCompileDelayMs = 25000;
@@ -103,6 +108,8 @@ internal static class PresenterHotkey
     private static bool _upHeld;
     private static bool _downHeld;
     private static bool _codexHoldActive;
+    private static bool _claudeVoiceTypingActive;
+    private static IntPtr _claudeVoiceHwnd;
 
     [STAThread]
     private static void Main()
@@ -113,7 +120,9 @@ internal static class PresenterHotkey
 
         Log("Started low-level hook edition. up=0x" + _upVk.ToString("X2") +
             " (ChatGPT=>" + _upAction.Text + ", Codex hold=>" + _codexUpAction.Text +
-            ", PRISM focus=>" + _prismUpAction.Text + ", Claude=>" + _claudeUpAction.Text + ") down=0x" + _downVk.ToString("X2") +
+            ", PRISM focus=>" + _prismUpAction.Text + ", Claude=>" +
+            (_claudeUseWindowsVoiceTyping ? "voice typing " + _claudeVoiceTypingAction.Text : _claudeUpAction.Text) +
+            ") down=0x" + _downVk.ToString("X2") +
             " (=>" + _downAction.Text + ") doublePressMs=" + _doublePressMs +
             ". ArrowUp/ArrowDown are suppressed; single arrows are ignored.");
 
@@ -344,22 +353,32 @@ internal static class PresenterHotkey
             var foreground = GetForegroundSummary();
             if (IsCodexForeground(foreground))
             {
+                ForgetClaudeVoiceTyping("Codex foreground");
                 ToggleCodexHold(foreground);
             }
             else if (IsPrismForeground(foreground))
             {
+                ForgetClaudeVoiceTyping("PRISM foreground");
                 ReleaseCodexHoldIfActive("PRISM foreground");
                 StartPrismDictation(foreground);
             }
-            else if (IsClaudeForeground(foreground))
+            else if (IsClaudeForeground(foreground) || IsClaudeVoiceTypingPanelForeground(foreground))
             {
                 ReleaseCodexHoldIfActive("Claude foreground");
-                SendCombo(_claudeUpAction);
-                Log("Up double-press -> Claude " + _claudeUpAction.Text +
-                    " (foreground=" + foreground + ", original arrows suppressed)");
+                if (_claudeUseWindowsVoiceTyping)
+                {
+                    ToggleClaudeVoiceTyping(foreground);
+                }
+                else
+                {
+                    SendCombo(_claudeUpAction);
+                    Log("Up double-press -> Claude " + _claudeUpAction.Text +
+                        " (foreground=" + foreground + ", original arrows suppressed)");
+                }
             }
             else
             {
+                ForgetClaudeVoiceTyping("non-Claude foreground");
                 ReleaseCodexHoldIfActive("non-Codex foreground");
                 SendCombo(_upAction);
                 Log("Up double-press -> " + _upAction.Text + " (foreground=" + foreground +
@@ -370,7 +389,12 @@ internal static class PresenterHotkey
         {
             ReleaseCodexHoldIfActive("Down double-press before Enter");
             var foreground = GetForegroundSummary();
-            if (IsPrismForeground(foreground))
+            IntPtr claudeHwnd = StopClaudeVoiceTypingIfActive(foreground);
+            if (claudeHwnd != IntPtr.Zero)
+            {
+                SmartSendOrKey(claudeHwnd, "Claude voice typing", _downAction, foreground);
+            }
+            else if (IsPrismForeground(foreground))
             {
                 IntPtr hwnd = GetForegroundWindow();
                 SmartSendOrKey(hwnd, "PRISM", _prismDownAction, foreground);
@@ -443,6 +467,14 @@ internal static class PresenterHotkey
         if (!ContainsAny(summary, _claudeTitleContains)) return false;
         if (!_claudeDesktopOnly) return true;
         return !IsBrowserForeground(summary);
+    }
+
+    // The Win+H panel lives in TextInputHost. If it ever takes the foreground
+    // while we have it open for Claude, keep treating presses as Claude ones.
+    private static bool IsClaudeVoiceTypingPanelForeground(string summary)
+    {
+        if (!_claudeVoiceTypingActive) return false;
+        return GetForegroundProcessName(summary).Equals("TextInputHost", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool IsSmartSendForeground(string summary)
@@ -839,6 +871,69 @@ internal static class PresenterHotkey
         }
     }
 
+    private static void ToggleClaudeVoiceTyping(string foreground)
+    {
+        bool start;
+        lock (Gate)
+        {
+            _claudeVoiceTypingActive = !_claudeVoiceTypingActive;
+            start = _claudeVoiceTypingActive;
+            if (start) _claudeVoiceHwnd = GetForegroundWindow();
+        }
+
+        // Win+H is itself a toggle: the same combo opens and closes voice typing.
+        SendCombo(_claudeVoiceTypingAction);
+        Log("Up double-press -> Claude Windows voice typing " + (start ? "START" : "STOP") +
+            " via " + _claudeVoiceTypingAction.Text +
+            " (foreground=" + foreground + ", original arrows suppressed)");
+    }
+
+    // Returns the Claude window to send to if voice typing was open there and
+    // has now been closed, or IntPtr.Zero if there was nothing to stop.
+    private static IntPtr StopClaudeVoiceTypingIfActive(string foreground)
+    {
+        bool panelForeground = IsClaudeVoiceTypingPanelForeground(foreground);
+        IntPtr hwnd;
+        lock (Gate)
+        {
+            if (!_claudeVoiceTypingActive) return IntPtr.Zero;
+            _claudeVoiceTypingActive = false;
+            hwnd = _claudeVoiceHwnd;
+            _claudeVoiceHwnd = IntPtr.Zero;
+        }
+
+        if (IsClaudeForeground(foreground))
+        {
+            hwnd = GetForegroundWindow();
+        }
+        else if (!panelForeground)
+        {
+            Log("Forgot Claude voice typing state (Down double-press outside Claude, foreground=" + foreground + ")");
+            return IntPtr.Zero;
+        }
+
+        SendCombo(_claudeVoiceTypingAction);
+        Log("Down double-press -> Claude Windows voice typing STOP via " + _claudeVoiceTypingAction.Text +
+            ", waiting " + _claudeVoiceStopBeforeSendMs + "ms before send (foreground=" + foreground + ")");
+        if (_claudeVoiceStopBeforeSendMs > 0) Thread.Sleep(_claudeVoiceStopBeforeSendMs);
+        return hwnd;
+    }
+
+    // Clears our Claude voice typing flag without sending Win+H, used when the
+    // user has moved to another app and we can no longer tell the panel's state.
+    private static void ForgetClaudeVoiceTyping(string reason)
+    {
+        bool wasActive;
+        lock (Gate)
+        {
+            wasActive = _claudeVoiceTypingActive;
+            _claudeVoiceTypingActive = false;
+            _claudeVoiceHwnd = IntPtr.Zero;
+        }
+
+        if (wasActive) Log("Forgot Claude voice typing state (" + reason + ")");
+    }
+
     private static void ReleaseCodexHoldIfActive(string reason)
     {
         bool shouldRelease;
@@ -953,6 +1048,8 @@ internal static class PresenterHotkey
                 _prismDownAction = KeyCombo.Parse(Convert.ToString(map["PrismDownAction"], CultureInfo.InvariantCulture), _prismDownAction);
             if (map.ContainsKey("ClaudeUpAction"))
                 _claudeUpAction = KeyCombo.Parse(Convert.ToString(map["ClaudeUpAction"], CultureInfo.InvariantCulture), _claudeUpAction);
+            if (map.ContainsKey("ClaudeVoiceTypingAction"))
+                _claudeVoiceTypingAction = KeyCombo.Parse(Convert.ToString(map["ClaudeVoiceTypingAction"], CultureInfo.InvariantCulture), _claudeVoiceTypingAction);
             if (map.ContainsKey("PrismWindowTitleContains"))
                 _prismTitleContains = ToStringArray(map["PrismWindowTitleContains"], _prismTitleContains);
             if (map.ContainsKey("ClaudeWindowTitleContains"))
@@ -977,6 +1074,8 @@ internal static class PresenterHotkey
             if (map.ContainsKey("PrismAutoCompileAfterEnter")) _prismAutoCompileAfterEnter = ToBool(map["PrismAutoCompileAfterEnter"], _prismAutoCompileAfterEnter);
             if (map.ContainsKey("PrismCompileDelayMs")) _prismCompileDelayMs = ToInt(map["PrismCompileDelayMs"], _prismCompileDelayMs);
             if (map.ContainsKey("ClaudeDesktopOnly")) _claudeDesktopOnly = ToBool(map["ClaudeDesktopOnly"], _claudeDesktopOnly);
+            if (map.ContainsKey("ClaudeUseWindowsVoiceTyping")) _claudeUseWindowsVoiceTyping = ToBool(map["ClaudeUseWindowsVoiceTyping"], _claudeUseWindowsVoiceTyping);
+            if (map.ContainsKey("ClaudeVoiceStopBeforeSendMs")) _claudeVoiceStopBeforeSendMs = ToInt(map["ClaudeVoiceStopBeforeSendMs"], _claudeVoiceStopBeforeSendMs);
         }
         catch (Exception ex)
         {
