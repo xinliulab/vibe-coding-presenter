@@ -27,7 +27,14 @@
 // default double ArrowUp toggles Windows voice typing (Win+H) instead. Double
 // ArrowDown while voice typing is open stops it first, waits for the last
 // phrase to land in the composer, then sends. Set ClaudeUseWindowsVoiceTyping
-// to false to go back to Ctrl+D. For modern AI apps, double ArrowDown can also
+// to false to go back to Ctrl+D.
+//
+// When some other app is foreground (mail, a PDF, ...), double ArrowUp jumps
+// back to the AI agent used last (Claude or Codex, Claude by default), brings
+// it to the front, and starts dictation there, so the mouse never has to go
+// back to the input box. ChatGPT web tabs still get Ctrl+Shift+D directly.
+//
+// For modern AI apps, double ArrowDown can also
 // click the real Send button via UI Automation before falling back to Enter.
 // This survives app updates where synthetic Enter no longer submits.
 
@@ -97,6 +104,11 @@ internal static class PresenterHotkey
     private static bool _claudeDesktopOnly = true;
     private static bool _claudeUseWindowsVoiceTyping = true;
     private static int _claudeVoiceStopBeforeSendMs = 800;
+    private static string[] _claudeInputNameContains = new[] { "prompt", "prosemirror" };
+    private static int _claudeFocusDelayMs = 150;
+    private static string[] _claudeProcessNames = new[] { "claude" };
+    private static string[] _chatGptWebTitleContains = new[] { "chatgpt" };
+    private static bool _jumpToAgentFromOtherApps = true;
     private static int _prismFocusDelayMs = 150;
     private static bool _prismAutoCompileAfterEnter = true;
     private static int _prismCompileDelayMs = 25000;
@@ -110,6 +122,7 @@ internal static class PresenterHotkey
     private static bool _codexHoldActive;
     private static bool _claudeVoiceTypingActive;
     private static IntPtr _claudeVoiceHwnd;
+    private static bool _lastAgentWasCodex;
 
     [STAThread]
     private static void Main()
@@ -353,6 +366,7 @@ internal static class PresenterHotkey
             var foreground = GetForegroundSummary();
             if (IsCodexForeground(foreground))
             {
+                _lastAgentWasCodex = true;
                 ForgetClaudeVoiceTyping("Codex foreground");
                 ToggleCodexHold(foreground);
             }
@@ -364,17 +378,13 @@ internal static class PresenterHotkey
             }
             else if (IsClaudeForeground(foreground) || IsClaudeVoiceTypingPanelForeground(foreground))
             {
+                _lastAgentWasCodex = false;
                 ReleaseCodexHoldIfActive("Claude foreground");
-                if (_claudeUseWindowsVoiceTyping)
-                {
-                    ToggleClaudeVoiceTyping(foreground);
-                }
-                else
-                {
-                    SendCombo(_claudeUpAction);
-                    Log("Up double-press -> Claude " + _claudeUpAction.Text +
-                        " (foreground=" + foreground + ", original arrows suppressed)");
-                }
+                StartClaudeDictation(foreground);
+            }
+            else if (_jumpToAgentFromOtherApps && !IsChatGptWebForeground(foreground))
+            {
+                JumpToAgentAndDictate(foreground);
             }
             else
             {
@@ -475,6 +485,11 @@ internal static class PresenterHotkey
     {
         if (!_claudeVoiceTypingActive) return false;
         return GetForegroundProcessName(summary).Equals("TextInputHost", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsChatGptWebForeground(string summary)
+    {
+        return IsBrowserForeground(summary) && ContainsAny(summary, _chatGptWebTitleContains);
     }
 
     private static bool IsSmartSendForeground(string summary)
@@ -871,20 +886,143 @@ internal static class PresenterHotkey
         }
     }
 
+    private static void StartClaudeDictation(string foreground)
+    {
+        if (_claudeUseWindowsVoiceTyping)
+        {
+            ToggleClaudeVoiceTyping(foreground);
+            return;
+        }
+
+        SendCombo(_claudeUpAction);
+        Log("Up double-press -> Claude " + _claudeUpAction.Text +
+            " (foreground=" + foreground + ", original arrows suppressed)");
+    }
+
+    private static void JumpToAgentAndDictate(string foreground)
+    {
+        ForgetClaudeVoiceTyping("jumping to agent from " + foreground);
+        ReleaseCodexHoldIfActive("jumping to agent");
+
+        bool codex = _lastAgentWasCodex;
+        IntPtr hwnd = FindAgentWindow(codex);
+        if (hwnd == IntPtr.Zero)
+        {
+            codex = !codex;
+            hwnd = FindAgentWindow(codex);
+        }
+        if (hwnd == IntPtr.Zero)
+        {
+            Log("Up double-press -> no Claude or Codex window to jump to (foreground=" + foreground + ")");
+            return;
+        }
+
+        bool activated = ActivateWindow(hwnd);
+        string target = GetForegroundSummary();
+        Log("Up double-press -> jump to " + (codex ? "Codex" : "Claude") + " activated=" + activated +
+            " (from=" + foreground + ", now=" + target + ")");
+        if (!activated) return;
+
+        // Give the app a moment to restore focus to its input box.
+        if (_claudeFocusDelayMs > 0) Thread.Sleep(_claudeFocusDelayMs);
+        if (codex)
+        {
+            ToggleCodexHold(target);
+        }
+        else
+        {
+            StartClaudeDictation(target);
+        }
+    }
+
+    // EnumWindows walks top-level windows in z-order, so the first match is the
+    // agent window the user had in front most recently.
+    private static IntPtr FindAgentWindow(bool codex)
+    {
+        IntPtr found = IntPtr.Zero;
+        var processNames = new Dictionary<uint, string>();
+        EnumWindows(delegate (IntPtr h, IntPtr lParam)
+        {
+            if (!IsWindowVisible(h) || GetWindow(h, GW_OWNER) != IntPtr.Zero) return true;
+            if ((GetWindowLong(h, GWL_EXSTYLE) & WS_EX_TOOLWINDOW) != 0) return true;
+
+            var title = new StringBuilder(256);
+            GetWindowText(h, title, title.Capacity);
+            if (title.Length == 0) return true;
+
+            uint pid;
+            GetWindowThreadProcessId(h, out pid);
+            string process;
+            if (!processNames.TryGetValue(pid, out process))
+            {
+                try { process = Process.GetProcessById((int)pid).ProcessName; } catch { process = ""; }
+                processNames[pid] = process;
+            }
+
+            bool match = codex
+                ? ContainsAnyExact(process, _codexHoldProcessNames)
+                : ContainsAnyExact(process, _claudeProcessNames) && ContainsAny(title.ToString(), _claudeTitleContains);
+            if (!match) return true;
+
+            found = h;
+            return false;
+        }, IntPtr.Zero);
+        return found;
+    }
+
+    private static bool ActivateWindow(IntPtr hwnd)
+    {
+        if (GetForegroundWindow() == hwnd) return true;
+        if (IsIconic(hwnd)) ShowWindow(hwnd, SW_RESTORE);
+
+        // Windows only lets the process behind the latest input take the
+        // foreground. A synthetic Alt tap makes that us; it lands in the app
+        // we are leaving, before the switch.
+        if (!SetForegroundWindow(hwnd) || !WaitForForeground(hwnd))
+        {
+            var alt = new List<INPUT>(2);
+            alt.Add(KeyInput(VK_LMENU, false));
+            alt.Add(KeyInput(VK_LMENU, true));
+            SendInputs("Alt tap for activation", alt);
+            SetForegroundWindow(hwnd);
+        }
+
+        return WaitForForeground(hwnd);
+    }
+
+    private static bool WaitForForeground(IntPtr hwnd)
+    {
+        for (int i = 0; i < 20; i++)
+        {
+            if (GetForegroundWindow() == hwnd) return true;
+            Thread.Sleep(25);
+        }
+        return GetForegroundWindow() == hwnd;
+    }
+
     private static void ToggleClaudeVoiceTyping(string foreground)
     {
         bool start;
+        IntPtr hwnd;
         lock (Gate)
         {
             _claudeVoiceTypingActive = !_claudeVoiceTypingActive;
             start = _claudeVoiceTypingActive;
             if (start) _claudeVoiceHwnd = GetForegroundWindow();
+            hwnd = _claudeVoiceHwnd;
+        }
+
+        bool refocused = false;
+        if (start)
+        {
+            refocused = RefreshClaudeInputFocus(hwnd);
+            if (_claudeFocusDelayMs > 0) Thread.Sleep(_claudeFocusDelayMs);
         }
 
         // Win+H is itself a toggle: the same combo opens and closes voice typing.
         SendCombo(_claudeVoiceTypingAction);
         Log("Up double-press -> Claude Windows voice typing " + (start ? "START" : "STOP") +
-            " via " + _claudeVoiceTypingAction.Text +
+            " via " + _claudeVoiceTypingAction.Text + (start ? ", refocused=" + refocused : "") +
             " (foreground=" + foreground + ", original arrows suppressed)");
     }
 
@@ -917,6 +1055,104 @@ internal static class PresenterHotkey
             ", waiting " + _claudeVoiceStopBeforeSendMs + "ms before send (foreground=" + foreground + ")");
         if (_claudeVoiceStopBeforeSendMs > 0) Thread.Sleep(_claudeVoiceStopBeforeSendMs);
         return hwnd;
+    }
+
+    // Windows voice typing targets whatever the last UIA focus event named, not
+    // the live focus. After the mouse wanders to another monitor that can go
+    // stale, so Win+H opens on the wrong screen and types nowhere even though
+    // the caret is still in Claude. Bouncing focus off the page and back fires
+    // a fresh focus event; ProseMirror restores its caret on refocus.
+    private static bool RefreshClaudeInputFocus(IntPtr hwnd)
+    {
+        if (hwnd == IntPtr.Zero) return false;
+        try
+        {
+            var root = AutomationElement.FromHandle(hwnd);
+            if (root == null) return false;
+
+            AutomationElement input = FindClaudeInput(root);
+            if (input == null)
+            {
+                Log("Claude refocus failed: no input box found (focused=" + DescribeFocusedElement() + ")");
+                return false;
+            }
+
+            string before = DescribeFocusedElement();
+            AutomationElement page = FindAncestor(input, ControlType.Document, root);
+            if (page != null)
+            {
+                try
+                {
+                    page.SetFocus();
+                    Thread.Sleep(30);
+                }
+                catch (Exception ex)
+                {
+                    Log("Claude refocus: page focus failed: " + ex.GetType().Name + ": " + ex.Message);
+                }
+            }
+
+            input.SetFocus();
+            Log("Claude refocused input box (before=" + before + ")");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Log("Claude refocus exception: " + ex.GetType().Name + ": " + ex.Message);
+            return false;
+        }
+    }
+
+    private static AutomationElement FindClaudeInput(AutomationElement root)
+    {
+        var editCondition = new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Edit);
+        AutomationElementCollection all = root.FindAll(TreeScope.Descendants, editCondition);
+        AutomationElement best = null;
+        double bestBottom = double.MinValue;
+
+        for (int i = 0; i < all.Count; i++)
+        {
+            AutomationElement e = all[i];
+            if (!IsUsableAutomationElement(e)) continue;
+            if (!ContainsAny(SafeAutomationText(e), _claudeInputNameContains)) continue;
+            if (e.Current.HasKeyboardFocus) return e;
+
+            System.Windows.Rect r = e.Current.BoundingRectangle;
+            if (r.Bottom > bestBottom)
+            {
+                best = e;
+                bestBottom = r.Bottom;
+            }
+        }
+        return best;
+    }
+
+    private static AutomationElement FindAncestor(AutomationElement e, ControlType type, AutomationElement stopAt)
+    {
+        TreeWalker walker = TreeWalker.ControlViewWalker;
+        AutomationElement current = walker.GetParent(e);
+        while (current != null && !Automation.Compare(current, stopAt))
+        {
+            if (current.Current.ControlType == type) return current;
+            current = walker.GetParent(current);
+        }
+        return null;
+    }
+
+    private static string DescribeFocusedElement()
+    {
+        try
+        {
+            AutomationElement f = AutomationElement.FocusedElement;
+            if (f == null) return "none";
+            string process = "pid:" + f.Current.ProcessId;
+            try { process = Process.GetProcessById(f.Current.ProcessId).ProcessName; } catch { }
+            return process + " " + f.Current.ControlType.ProgrammaticName + " '" + f.Current.Name + "'";
+        }
+        catch
+        {
+            return "unknown";
+        }
     }
 
     // Clears our Claude voice typing flag without sending Win+H, used when the
@@ -1076,6 +1312,14 @@ internal static class PresenterHotkey
             if (map.ContainsKey("ClaudeDesktopOnly")) _claudeDesktopOnly = ToBool(map["ClaudeDesktopOnly"], _claudeDesktopOnly);
             if (map.ContainsKey("ClaudeUseWindowsVoiceTyping")) _claudeUseWindowsVoiceTyping = ToBool(map["ClaudeUseWindowsVoiceTyping"], _claudeUseWindowsVoiceTyping);
             if (map.ContainsKey("ClaudeVoiceStopBeforeSendMs")) _claudeVoiceStopBeforeSendMs = ToInt(map["ClaudeVoiceStopBeforeSendMs"], _claudeVoiceStopBeforeSendMs);
+            if (map.ContainsKey("ClaudeInputNameContains"))
+                _claudeInputNameContains = ToStringArray(map["ClaudeInputNameContains"], _claudeInputNameContains);
+            if (map.ContainsKey("ClaudeFocusDelayMs")) _claudeFocusDelayMs = ToInt(map["ClaudeFocusDelayMs"], _claudeFocusDelayMs);
+            if (map.ContainsKey("ClaudeProcessNames"))
+                _claudeProcessNames = ToStringArray(map["ClaudeProcessNames"], _claudeProcessNames);
+            if (map.ContainsKey("ChatGptWebTitleContains"))
+                _chatGptWebTitleContains = ToStringArray(map["ChatGptWebTitleContains"], _chatGptWebTitleContains);
+            if (map.ContainsKey("JumpToAgentFromOtherApps")) _jumpToAgentFromOtherApps = ToBool(map["JumpToAgentFromOtherApps"], _jumpToAgentFromOtherApps);
         }
         catch (Exception ex)
         {
@@ -1355,4 +1599,37 @@ internal static class PresenterHotkey
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int count);
+
+    private const int GW_OWNER = 4;
+    private const int GWL_EXSTYLE = -20;
+    private const int WS_EX_TOOLWINDOW = 0x80;
+    private const int SW_RESTORE = 9;
+
+    private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool EnumWindows(EnumWindowsProc callback, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool IsWindowVisible(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool IsIconic(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetWindow(IntPtr hWnd, int cmd);
+
+    [DllImport("user32.dll")]
+    private static extern int GetWindowLong(IntPtr hWnd, int index);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool ShowWindow(IntPtr hWnd, int cmd);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SetForegroundWindow(IntPtr hWnd);
 }

@@ -24,7 +24,7 @@ This project maps a presenter remote's Up/Down buttons into that loop, so you ca
 
 Vibe Coding Presenter is a lightweight Windows tray app written in C#/.NET Framework. It listens for double-presses from a presenter remote that sends `ArrowUp` and `ArrowDown` keyboard events.
 
-- Double Up starts or stops voice input.
+- Double Up starts or stops voice input. If you are in some other app (mail, a PDF, a browser page), it first jumps back to the AI agent you used last, so you never have to move the mouse back to the input box.
 - Double Down sends the message. In ChatGPT, Codex, Claude, and PRISM, the app first tries to click the real `Send` button through Windows UI Automation, then falls back to `Enter`.
 - Single Up/Down presses are swallowed so the remote does not accidentally scroll pages or recall command history.
 - The tray menu includes Pause, Restart hook, Open log file, and Exit.
@@ -77,6 +77,8 @@ Claude's built-in dictation is not very reliable on Windows, so Vibe Coding Pres
 - Double Down while voice typing is open stops it, waits briefly (`ClaudeVoiceStopBeforeSendMs`, default 800 ms) so the last phrase lands, then clicks `Send` or falls back to `Enter`.
 - Double Down when voice typing is not open just clicks `Send` or falls back to `Enter`.
 
+Before opening voice typing, the app briefly moves focus off Claude's input box and back. Windows voice typing follows the last focus event it saw, which can go stale after the mouse moves to another monitor, making the voice typing bar open on the wrong screen and type nowhere. The refresh fixes that, and the caret stays where it was.
+
 To go back to Claude's own dictation shortcut (`Ctrl+D`), set:
 
 ```json
@@ -88,6 +90,16 @@ Windows voice typing may hear you but insert nothing when a third-party IME such
 This tool only runs on Windows. On a Mac, keep using Claude's built-in dictation directly.
 
 By default, this Claude rule is desktop-app-only and will not trigger inside common browsers, even if a browser tab title contains the word "Claude".
+
+#### Jump back from any other app
+
+When the foreground app is not Claude, Codex, PRISM, or a ChatGPT web tab, Double Up:
+
+1. Finds the AI agent you used last (Claude or Codex; Claude if you have not used either since startup). If that one is not open, it uses the other.
+2. Brings its window to the front (restoring it if minimized).
+3. Starts dictation there exactly as if you had pressed Double Up inside it: Windows voice typing in Claude, hold-to-dictate in Codex.
+
+Then Double Down sends as usual. Set `"JumpToAgentFromOtherApps": false` to restore the old behavior (send `Ctrl+Shift+D` to whatever app is in front).
 
 ### Installation
 
@@ -147,6 +159,11 @@ Sample behavior:
   "ClaudeUseWindowsVoiceTyping": true,
   "ClaudeVoiceTypingAction": "Win+H",
   "ClaudeVoiceStopBeforeSendMs": 800,
+  "ClaudeInputNameContains": ["prompt", "prosemirror"],
+  "ClaudeFocusDelayMs": 150,
+  "ClaudeProcessNames": ["claude"],
+  "JumpToAgentFromOtherApps": true,
+  "ChatGptWebTitleContains": ["chatgpt"],
   "DownAction": "Enter",
   "PrismWindowTitleContains": ["prism"],
   "ClaudeWindowTitleContains": ["claude"],
@@ -215,7 +232,7 @@ Ctrl+Shift+D + Enter
 
 Vibe Coding Presenter 是一个轻量的 Windows 托盘程序，用 C#/.NET Framework 编写。它监听遥控器发出的 `ArrowUp` 和 `ArrowDown` 键盘事件，并识别“双击”。
 
-- 向上双击：启动或停止语音输入。
+- 向上双击：启动或停止语音输入。如果你正在用别的程序（邮件、PDF、网页等），它会先自动跳回你最近用的 AI 助手，不用再把鼠标移回输入框。
 - 向下双击：发送消息。在 ChatGPT、Codex、Claude 和 PRISM 里，程序会先通过 Windows UI Automation 点击真正的 `Send` 按钮；如果找不到按钮，再回退到 `Enter`。
 - 单次上/下键会被吞掉，避免网页滚动或 Codex 回放历史输入。
 - 托盘菜单提供 Pause、Restart hook、Open log file 和 Exit。
@@ -268,6 +285,8 @@ Claude 自带的语音输入在 Windows 上效果不太好，所以当前台是 
 - 语音输入还开着时向下双击：先结束语音输入，稍等一下（`ClaudeVoiceStopBeforeSendMs`，默认 800 毫秒）让最后一句落到输入框里，然后点击 `Send` 按钮；找不到按钮时回退到 `Enter`。
 - 语音输入没开时向下双击：直接点击 `Send` 按钮或回退到 `Enter`。
 
+打开语音输入前，程序会让 Claude 输入框的焦点很快地离开再回来。Windows 语音输入认的是它最后收到的焦点通知；鼠标移到别的屏幕后，这个记录可能过时，导致语音条跑到别的屏幕、文字打不进去。刷新一下焦点就能解决，光标位置不会变。
+
 如果想换回 Claude 自带的语音快捷键（`Ctrl+D`），把配置改成：
 
 ```json
@@ -279,6 +298,16 @@ Claude 自带的语音输入在 Windows 上效果不太好，所以当前台是 
 这个工具只在 Windows 上运行。在 Mac 上直接使用 Claude 自带的语音输入即可。
 
 默认情况下，这条 Claude 规则只针对桌面应用生效；如果普通浏览器网页标题里有 Claude，它不会触发，避免误把 Edge/Chrome 里的 `Ctrl+D` 变成收藏网页。
+
+#### 从任何程序一键跳回
+
+当前台不是 Claude、Codex、PRISM 或 ChatGPT 网页时，向上双击会：
+
+1. 找到你最近用的 AI 助手（Claude 或 Codex；程序启动后两个都没用过时默认 Claude）。如果它没打开，就用另一个。
+2. 把它的窗口切到最前面（最小化了会自动还原）。
+3. 像你在它里面向上双击一样开始语音输入：Claude 用 Windows 语音输入，Codex 用按住听写。
+
+之后向下双击照常发送。如果想恢复旧行为（直接向当前程序发送 `Ctrl+Shift+D`），设置 `"JumpToAgentFromOtherApps": false`。
 
 ### 安装
 
@@ -338,6 +367,11 @@ config.sample.json
   "ClaudeUseWindowsVoiceTyping": true,
   "ClaudeVoiceTypingAction": "Win+H",
   "ClaudeVoiceStopBeforeSendMs": 800,
+  "ClaudeInputNameContains": ["prompt", "prosemirror"],
+  "ClaudeFocusDelayMs": 150,
+  "ClaudeProcessNames": ["claude"],
+  "JumpToAgentFromOtherApps": true,
+  "ChatGptWebTitleContains": ["chatgpt"],
   "DownAction": "Enter",
   "PrismWindowTitleContains": ["prism"],
   "ClaudeWindowTitleContains": ["claude"],
