@@ -27,7 +27,7 @@ Vibe Coding Presenter is a lightweight Windows tray app written in C#/.NET Frame
 - Double Up starts or stops voice input. If you are in some other app (mail, a PDF, a browser page), it first jumps back to the AI agent you used last, so you never have to move the mouse back to the input box.
 - Double Down sends the message. In ChatGPT, Codex, Claude, and PRISM, the app first tries to click the real `Send` button through Windows UI Automation, then falls back to `Enter`.
 - Single Up/Down presses are swallowed so the remote does not accidentally scroll pages or recall command history.
-- The tray menu includes Pause, Restart hook, Open log file, and Exit.
+- The tray menu includes Pause, Claude voice input (Windows voice typing or Claude's own dictation), Restart hook, Open log file, and Exit.
 
 ### Supported workflows
 
@@ -79,13 +79,15 @@ Claude's built-in dictation is not very reliable on Windows, so Vibe Coding Pres
 
 Before opening voice typing, the app briefly moves focus off Claude's input box and back. Windows voice typing follows the last focus event it saw, which can go stale after the mouse moves to another monitor, making the voice typing bar open on the wrong screen and type nowhere. The refresh fixes that, and the caret stays where it was.
 
-To go back to Claude's own dictation shortcut (`Ctrl+D`), set:
+To switch between Windows voice typing and Claude's own dictation (`Ctrl+D`), right-click the tray icon and choose **Claude voice input**. The choice takes effect immediately and is saved to your local config as:
 
 ```json
 "ClaudeUseWindowsVoiceTyping": false
 ```
 
 Windows voice typing may hear you but insert nothing when a third-party IME such as Sogou Pinyin is active in the Claude window. Switch that window to an English keyboard (`Win+Space`) or Microsoft Pinyin before dictating.
+
+When Claude's own dictation is selected, Double Up starts or stops dictation (so you can pause and think), and Double Down always sends. Claude streams a rough transcript while you talk and rewrites it with context about 0.5-1 second after dictation stops (often turning English guesses into the Chinese you actually said), and it hides its Send button while dictating. So Double Down stops dictation first, waits for the rewrite (at least `ClaudeDictationMinWaitMs`, and until the text has been quiet for `ClaudeDictationSettleMs`), sends, and sends again if the input box did not empty.
 
 This tool only runs on Windows. On a Mac, keep using Claude's built-in dictation directly.
 
@@ -162,6 +164,10 @@ Sample behavior:
   "ClaudeInputNameContains": ["prompt", "prosemirror"],
   "ClaudeFocusDelayMs": 150,
   "ClaudeProcessNames": ["claude"],
+  "ClaudeDictationStopButtonNames": ["stop dictation"],
+  "ClaudeDictationMinWaitMs": 2000,
+  "ClaudeDictationSettleMs": 700,
+  "ClaudeDictationMaxWaitMs": 8000,
   "JumpToAgentFromOtherApps": true,
   "ChatGptWebTitleContains": ["chatgpt"],
   "DownAction": "Enter",
@@ -190,7 +196,7 @@ If PRISM has a different browser title on your machine, add another keyword to `
 - Windows only.
 - Designed for presenter remotes that emit `ArrowUp` and `ArrowDown`.
 - While running, normal `ArrowUp` and `ArrowDown` keyboard events are intercepted globally. Use Pause or Exit from the tray menu when you need normal arrow-key navigation.
-- If the remote suddenly starts scrolling again, right-click the tray icon and choose Restart hook.
+- Windows silently removes a keyboard hook that ever responds too slowly (this happens easily right after boot), and the remote's arrows then leak into apps again (for example, recalling old prompts). A watchdog compares the hook against raw keyboard input and reinstalls the hook within about a second of the first missed key. If the remote still misbehaves, right-click the tray icon and choose Restart hook.
 - PRISM support depends on Windows UI Automation being able to see the input box.
 - Windows voice typing (used for Claude and PRISM) may not insert text while a third-party IME such as Sogou Pinyin is active. Use an English keyboard or Microsoft Pinyin.
 
@@ -235,7 +241,7 @@ Vibe Coding Presenter 是一个轻量的 Windows 托盘程序，用 C#/.NET Fram
 - 向上双击：启动或停止语音输入。如果你正在用别的程序（邮件、PDF、网页等），它会先自动跳回你最近用的 AI 助手，不用再把鼠标移回输入框。
 - 向下双击：发送消息。在 ChatGPT、Codex、Claude 和 PRISM 里，程序会先通过 Windows UI Automation 点击真正的 `Send` 按钮；如果找不到按钮，再回退到 `Enter`。
 - 单次上/下键会被吞掉，避免网页滚动或 Codex 回放历史输入。
-- 托盘菜单提供 Pause、Restart hook、Open log file 和 Exit。
+- 托盘菜单提供 Pause、Claude voice input（选择 Windows 语音输入或 Claude 自带语音）、Restart hook、Open log file 和 Exit。
 
 ### 支持的场景
 
@@ -287,13 +293,15 @@ Claude 自带的语音输入在 Windows 上效果不太好，所以当前台是 
 
 打开语音输入前，程序会让 Claude 输入框的焦点很快地离开再回来。Windows 语音输入认的是它最后收到的焦点通知；鼠标移到别的屏幕后，这个记录可能过时，导致语音条跑到别的屏幕、文字打不进去。刷新一下焦点就能解决，光标位置不会变。
 
-如果想换回 Claude 自带的语音快捷键（`Ctrl+D`），把配置改成：
+如果想在 Windows 语音输入和 Claude 自带的语音（`Ctrl+D`）之间切换，右键托盘图标，选 **Claude voice input** 即可。选择立刻生效，并会保存到本地配置里：
 
 ```json
 "ClaudeUseWindowsVoiceTyping": false
 ```
 
 如果 Claude 窗口里用的是搜狗拼音这类第三方输入法，Windows 语音输入可能能听到声音但打不出字。说话前先按 `Win+空格` 把这个窗口切到英文键盘或微软拼音即可。
+
+选用 Claude 自带语音时，向上双击负责开始/停止录音（中途可以停下来想一想），向下双击一定发送。Claude 边听边显示粗略的文字，停止听写约 0.5–1 秒后才会结合上下文重写一遍（经常把识别错的英文改回你说的中文），而且录音时会隐藏 Send 按钮。所以向下双击会先停止录音，等 Claude 重写（至少 `ClaudeDictationMinWaitMs`，并且文字静止 `ClaudeDictationSettleMs`），然后发送；如果输入框没清空，再补发一次。
 
 这个工具只在 Windows 上运行。在 Mac 上直接使用 Claude 自带的语音输入即可。
 
@@ -370,6 +378,10 @@ config.sample.json
   "ClaudeInputNameContains": ["prompt", "prosemirror"],
   "ClaudeFocusDelayMs": 150,
   "ClaudeProcessNames": ["claude"],
+  "ClaudeDictationStopButtonNames": ["stop dictation"],
+  "ClaudeDictationMinWaitMs": 2000,
+  "ClaudeDictationSettleMs": 700,
+  "ClaudeDictationMaxWaitMs": 8000,
   "JumpToAgentFromOtherApps": true,
   "ChatGptWebTitleContains": ["chatgpt"],
   "DownAction": "Enter",
@@ -398,7 +410,7 @@ config.sample.json
 - 目前仅支持 Windows。
 - 适合会发送 `ArrowUp` 和 `ArrowDown` 的演示遥控器。
 - 程序运行时会全局拦截普通 `ArrowUp` 和 `ArrowDown`。如果你需要正常使用方向键，可以从托盘菜单 Pause 或 Exit。
-- 如果遥控器突然又开始滚动网页，右键托盘图标，点击 Restart hook。
+- Windows 会悄悄移除响应过慢的键盘钩子（刚开机电脑很忙时很容易发生），之后遥控器的方向键又会直接进入程序（比如把以前的聊天记录调出来）。程序带有看门狗：用 Raw Input 对照钩子，发现漏掉按键后大约一秒内自动重装钩子。如果遥控器还是不正常，右键托盘图标，点击 Restart hook。
 - PRISM 支持依赖 Windows UI Automation 能否识别页面输入框。
 - Windows 语音输入（Claude 和 PRISM 用的就是它）在搜狗拼音等第三方输入法下可能打不出字，请切到英文键盘或微软拼音。
 

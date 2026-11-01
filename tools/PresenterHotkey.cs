@@ -46,6 +46,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Web.Script.Serialization;
 using System.Windows.Forms;
@@ -61,6 +62,8 @@ internal static class PresenterHotkey
 
     private const int VK_UP = 0x26;
     private const int VK_DOWN = 0x28;
+    private const int VK_PRIOR = 0x21; // PageUp
+    private const int VK_NEXT = 0x22;  // PageDown
     private const int VK_LSHIFT = 0xA0;
     private const int VK_LCONTROL = 0xA2;
     private const int VK_LMENU = 0xA4;
@@ -79,10 +82,17 @@ internal static class PresenterHotkey
     private static IntPtr _hook = IntPtr.Zero;
     private static NotifyIcon _tray;
     private static ToolStripMenuItem _pauseItem;
+    private static ToolStripMenuItem _claudeWindowsVoiceItem;
+    private static ToolStripMenuItem _claudeBuiltInVoiceItem;
+    private static string _configPath;
     private static bool _paused;
 
     private static int _upVk = VK_UP;
     private static int _downVk = VK_DOWN;
+    // Presenters differ: some send ArrowUp/ArrowDown, others PageUp/PageDown.
+    // Every key listed here counts as that presenter button.
+    private static int[] _upVks = new[] { VK_UP, VK_PRIOR };
+    private static int[] _downVks = new[] { VK_DOWN, VK_NEXT };
     private static int _doublePressMs = 900;
     private static int _actionCooldownMs = 800;
     private static KeyCombo _upAction = KeyCombo.Parse("Ctrl+Shift+D", null);
@@ -107,6 +117,10 @@ internal static class PresenterHotkey
     private static string[] _claudeInputNameContains = new[] { "prompt", "prosemirror" };
     private static int _claudeFocusDelayMs = 150;
     private static string[] _claudeProcessNames = new[] { "claude" };
+    private static string[] _claudeDictationStopButtonNames = new[] { "stop dictation" };
+    private static int _claudeDictationMinWaitMs = 2000;
+    private static int _claudeDictationSettleMs = 700;
+    private static int _claudeDictationMaxWaitMs = 8000;
     private static string[] _chatGptWebTitleContains = new[] { "chatgpt" };
     private static bool _jumpToAgentFromOtherApps = true;
     private static int _prismFocusDelayMs = 150;
@@ -123,19 +137,28 @@ internal static class PresenterHotkey
     private static bool _claudeVoiceTypingActive;
     private static IntPtr _claudeVoiceHwnd;
     private static bool _lastAgentWasCodex;
+    private static int _lastClaudeDictationToggleTick;
+    // Our own guess of whether Claude's dictation is running: each double Up
+    // flips it. Claude's UI alone is ambiguous (the Send button is sometimes
+    // visible mid-dictation), so this decides whether Down must stop first.
+    private static bool _claudeDictating;
+    private static int _lastHookKeyTick;
+    private static int _lastRawKeyTick;
+    private static int _lastWatchdogReinstallTick;
 
     [STAThread]
     private static void Main()
     {
         var exeDir = AppDomain.CurrentDomain.BaseDirectory;
         _logPath = Path.Combine(exeDir, "PresenterHotkey.log");
-        LoadConfig(Path.Combine(exeDir, "presenter-hotkey.json"));
+        _configPath = Path.Combine(exeDir, "presenter-hotkey.json");
+        LoadConfig(_configPath);
 
-        Log("Started low-level hook edition. up=0x" + _upVk.ToString("X2") +
+        Log("Started low-level hook edition. up=" + VkList(_upVks) +
             " (ChatGPT=>" + _upAction.Text + ", Codex hold=>" + _codexUpAction.Text +
             ", PRISM focus=>" + _prismUpAction.Text + ", Claude=>" +
             (_claudeUseWindowsVoiceTyping ? "voice typing " + _claudeVoiceTypingAction.Text : _claudeUpAction.Text) +
-            ") down=0x" + _downVk.ToString("X2") +
+            ") down=" + VkList(_downVks) +
             " (=>" + _downAction.Text + ") doublePressMs=" + _doublePressMs +
             ". ArrowUp/ArrowDown are suppressed; single arrows are ignored.");
 
@@ -159,13 +182,37 @@ internal static class PresenterHotkey
 
     private sealed class TrayContext : ApplicationContext
     {
+        private readonly RawKeyboardWatcher _rawWatcher;
+        private readonly System.Windows.Forms.Timer _hookWatchdog;
+
         public TrayContext()
         {
+            _rawWatcher = RawKeyboardWatcher.TryCreate();
+            if (_rawWatcher != null)
+            {
+                _hookWatchdog = new System.Windows.Forms.Timer { Interval = 1000 };
+                _hookWatchdog.Tick += delegate { CheckHookAlive(); };
+                _hookWatchdog.Start();
+            }
+
             var menu = new ContextMenuStrip();
             menu.Items.Add(new ToolStripMenuItem("Presenter Hotkey - low-level hook") { Enabled = false });
             menu.Items.Add(new ToolStripSeparator());
             _pauseItem = new ToolStripMenuItem("Pause", null, OnPauseToggle);
             menu.Items.Add(_pauseItem);
+
+            var claudeVoice = new ToolStripMenuItem("Claude voice input");
+            _claudeWindowsVoiceItem = new ToolStripMenuItem(
+                "Windows voice typing (" + _claudeVoiceTypingAction.Text + ")", null,
+                delegate { SetClaudeVoiceMode(true); });
+            _claudeBuiltInVoiceItem = new ToolStripMenuItem(
+                "Claude built-in dictation (" + _claudeUpAction.Text + ")", null,
+                delegate { SetClaudeVoiceMode(false); });
+            claudeVoice.DropDownItems.Add(_claudeWindowsVoiceItem);
+            claudeVoice.DropDownItems.Add(_claudeBuiltInVoiceItem);
+            menu.Items.Add(claudeVoice);
+            UpdateClaudeVoiceMenu();
+
             menu.Items.Add(new ToolStripMenuItem("Restart hook", null, delegate { ReinstallHook("manual tray restart"); }));
             menu.Items.Add(new ToolStripMenuItem("Open log file", null, delegate { TryOpen(_logPath); }));
             menu.Items.Add(new ToolStripSeparator());
@@ -208,6 +255,28 @@ internal static class PresenterHotkey
             Log(_paused ? "Paused." : "Resumed.");
         }
 
+        private static void SetClaudeVoiceMode(bool useWindowsVoiceTyping)
+        {
+            if (_claudeUseWindowsVoiceTyping == useWindowsVoiceTyping) return;
+
+            ForgetClaudeVoiceTyping("Claude voice mode changed");
+            _claudeUseWindowsVoiceTyping = useWindowsVoiceTyping;
+            UpdateClaudeVoiceMenu();
+            SaveConfigBool("ClaudeUseWindowsVoiceTyping", useWindowsVoiceTyping);
+
+            string mode = useWindowsVoiceTyping
+                ? "Windows voice typing (" + _claudeVoiceTypingAction.Text + ")"
+                : "Claude built-in dictation (" + _claudeUpAction.Text + ")";
+            Log("Claude voice mode set to " + mode + " from tray menu.");
+            _tray.ShowBalloonTip(2500, "Claude voice input", mode, ToolTipIcon.Info);
+        }
+
+        private static void UpdateClaudeVoiceMenu()
+        {
+            _claudeWindowsVoiceItem.Checked = _claudeUseWindowsVoiceTyping;
+            _claudeBuiltInVoiceItem.Checked = !_claudeUseWindowsVoiceTyping;
+        }
+
         protected override void Dispose(bool disposing)
         {
             if (disposing && _tray != null)
@@ -215,8 +284,61 @@ internal static class PresenterHotkey
                 _tray.Visible = false;
                 _tray.Dispose();
             }
+            if (disposing && _hookWatchdog != null) _hookWatchdog.Dispose();
+            if (disposing && _rawWatcher != null) _rawWatcher.DestroyHandle();
             base.Dispose(disposing);
         }
+    }
+
+    // Raw keyboard input reaches this hidden window for every keystroke, even
+    // when our app is in the background, and unlike a low-level hook Windows
+    // never silently drops it. That makes it a reliable witness for the hook.
+    private sealed class RawKeyboardWatcher : NativeWindow
+    {
+        public static RawKeyboardWatcher TryCreate()
+        {
+            var watcher = new RawKeyboardWatcher();
+            watcher.CreateHandle(new CreateParams { Parent = HWND_MESSAGE });
+
+            var devices = new RAWINPUTDEVICE[1];
+            devices[0].usUsagePage = 0x01; // generic desktop
+            devices[0].usUsage = 0x06;     // keyboard
+            devices[0].dwFlags = RIDEV_INPUTSINK;
+            devices[0].hwndTarget = watcher.Handle;
+            if (!RegisterRawInputDevices(devices, 1, (uint)Marshal.SizeOf(typeof(RAWINPUTDEVICE))))
+            {
+                Log("Hook watchdog disabled: RegisterRawInputDevices failed: " + Marshal.GetLastWin32Error());
+                watcher.DestroyHandle();
+                return null;
+            }
+
+            Log("Hook watchdog enabled (raw keyboard input).");
+            return watcher;
+        }
+
+        protected override void WndProc(ref Message m)
+        {
+            if (m.Msg == WM_INPUT) _lastRawKeyTick = Environment.TickCount;
+            base.WndProc(ref m);
+        }
+    }
+
+    // Windows 7+ silently removes a low-level hook whose callback ever runs
+    // too long (easy to hit right after boot), and the arrows then leak into
+    // apps again. If raw input saw a keystroke the hook never did, the hook is
+    // gone, so put it back.
+    private static void CheckHookAlive()
+    {
+        int raw = _lastRawKeyTick;
+        if (raw == 0) return;
+        int missedBy = unchecked(raw - _lastHookKeyTick);
+        if (missedBy <= 500) return;
+
+        int now = Environment.TickCount;
+        if (_lastWatchdogReinstallTick != 0 && unchecked(now - _lastWatchdogReinstallTick) < 10000) return;
+        _lastWatchdogReinstallTick = now;
+        _lastHookKeyTick = now;
+        ReinstallHook("watchdog: hook missed keystrokes for " + missedBy + "ms");
     }
 
     private static bool InstallHook(string reason)
@@ -263,6 +385,7 @@ internal static class PresenterHotkey
             return CallNextHookEx(_hook, code, wParam, lParam);
         }
 
+        _lastHookKeyTick = Environment.TickCount;
         var info = Marshal.PtrToStructure<KBDLLHOOKSTRUCT>(lParam);
 
         // Pass through anything we injected ourselves.
@@ -271,8 +394,11 @@ internal static class PresenterHotkey
             return CallNextHookEx(_hook, code, wParam, lParam);
         }
 
-        var vk = info.vkCode;
-        if (vk != _upVk && vk != _downVk)
+        // Fold every configured key onto the canonical Up/Down code.
+        int vk = Array.IndexOf(_upVks, info.vkCode) >= 0 ? _upVk
+            : Array.IndexOf(_downVks, info.vkCode) >= 0 ? _downVk
+            : 0;
+        if (vk == 0)
         {
             return CallNextHookEx(_hook, code, wParam, lParam);
         }
@@ -404,6 +530,10 @@ internal static class PresenterHotkey
             {
                 SmartSendOrKey(claudeHwnd, "Claude voice typing", _downAction, foreground);
             }
+            else if (!_claudeUseWindowsVoiceTyping && IsClaudeForeground(foreground))
+            {
+                SendClaudeMessage(GetForegroundWindow(), foreground);
+            }
             else if (IsPrismForeground(foreground))
             {
                 IntPtr hwnd = GetForegroundWindow();
@@ -418,7 +548,8 @@ internal static class PresenterHotkey
             else
             {
                 SendCombo(_downAction);
-                Log("Down double-press -> " + _downAction.Text + " (original arrows suppressed)");
+                Log("Down double-press -> " + _downAction.Text + " (foreground=" + foreground +
+                    ", original arrows suppressed)");
             }
         }
     }
@@ -895,8 +1026,167 @@ internal static class PresenterHotkey
         }
 
         SendCombo(_claudeUpAction);
-        Log("Up double-press -> Claude " + _claudeUpAction.Text +
+        _lastClaudeDictationToggleTick = Environment.TickCount;
+        _claudeDictating = !_claudeDictating;
+        Log("Up double-press -> Claude " + _claudeUpAction.Text + (_claudeDictating ? " START" : " STOP") +
             " (foreground=" + foreground + ", original arrows suppressed)");
+    }
+
+    // Claude's own dictation streams a rough transcript while you talk, then
+    // rewrites it with context about 0.5-1 s after dictation stops (often
+    // English -> Chinese). While dictating, Claude hides its Send button and
+    // Enter only stops dictation. So double Down stops dictation if needed,
+    // waits for the rewrite, sends, and checks that the box really emptied.
+    private static void SendClaudeMessage(IntPtr hwnd, string foreground)
+    {
+        try
+        {
+            var root = AutomationElement.FromHandle(hwnd);
+            AutomationElement input = root == null ? null : FindClaudeInput(root);
+            if (input == null)
+            {
+                SmartSendOrKey(hwnd, "Claude", _downAction, foreground);
+                return;
+            }
+
+            string stoppedBy = null;
+            AutomationElement stop = FindClaudeComposerButton(root, input, _claudeDictationStopButtonNames);
+            if (stop != null)
+            {
+                stoppedBy = "clicked '" + stop.Current.Name + "'";
+                object invokeObj;
+                if (stop.TryGetCurrentPattern(InvokePattern.Pattern, out invokeObj))
+                    ((InvokePattern)invokeObj).Invoke();
+                else
+                    SendCombo(_claudeUpAction);
+            }
+            else if (FindSmartSendButton(root) == null)
+            {
+                // Some sessions only paste the transcript in once dictation
+                // stops, so an empty box can still mean "dictating". Enter on a
+                // truly empty, idle box does nothing.
+                SendCombo(_downAction);
+                stoppedBy = "pressed " + _downAction.Text + " (Send hidden: dictating or empty box)";
+            }
+            else if (_claudeDictating)
+            {
+                // Send is visible, so Enter would send the rough draft; use the
+                // same toggle that started dictation to stop it.
+                SendCombo(_claudeUpAction);
+                stoppedBy = "pressed " + _claudeUpAction.Text + " (dictation started by Up)";
+            }
+            else if (_lastClaudeDictationToggleTick != 0 &&
+                ElapsedMs(_lastClaudeDictationToggleTick, Environment.TickCount) < 5000)
+            {
+                stoppedBy = "stopped by Up just before";
+            }
+
+            _claudeDictating = false;
+            if (stoppedBy != null)
+            {
+                _lastClaudeDictationToggleTick = 0;
+                WaitForClaudeRewrite(root, ref input, stoppedBy);
+            }
+
+            SmartSendOrKey(hwnd, "Claude", _downAction, foreground);
+            EnsureClaudeSent(hwnd, root, ref input, foreground);
+        }
+        catch (Exception ex)
+        {
+            Log("Claude send exception: " + ex.GetType().Name + ": " + ex.Message);
+        }
+    }
+
+    private static void WaitForClaudeRewrite(AutomationElement root, ref AutomationElement input, string stoppedBy)
+    {
+        int start = Environment.TickCount;
+        string lastText = ReadClaudeInputText(root, ref input);
+        int lastChange = start;
+        int changes = 0;
+        while (ElapsedMs(start, Environment.TickCount) < _claudeDictationMaxWaitMs)
+        {
+            Thread.Sleep(100);
+            string text = ReadClaudeInputText(root, ref input);
+            if (text != lastText)
+            {
+                lastText = text;
+                lastChange = Environment.TickCount;
+                changes++;
+            }
+
+            // The transcript may land first and the context rewrite ~0.5-1 s
+            // later, so never send before the minimum wait.
+            if (input != null && FindClaudeComposerButton(root, input, _claudeDictationStopButtonNames) != null) continue;
+            if (ElapsedMs(start, Environment.TickCount) >= _claudeDictationMinWaitMs &&
+                ElapsedMs(lastChange, Environment.TickCount) >= _claudeDictationSettleMs) break;
+        }
+
+        Log("Claude dictation finished (" + stoppedBy + "): waited " + ElapsedMs(start, Environment.TickCount) +
+            "ms, text changes=" + changes + ", last change at " + ElapsedMs(start, lastChange) + "ms");
+    }
+
+    private static void EnsureClaudeSent(IntPtr hwnd, AutomationElement root, ref AutomationElement input, string foreground)
+    {
+        int start = Environment.TickCount;
+        while (ElapsedMs(start, Environment.TickCount) < 1500)
+        {
+            if (ReadClaudeInputText(root, ref input).Trim().Length == 0) return;
+            Thread.Sleep(100);
+        }
+
+        Log("Claude input still has text 1.5s after send; sending again.");
+        SmartSendOrKey(hwnd, "Claude retry", _downAction, foreground);
+    }
+
+    private static string ReadClaudeInputText(AutomationElement root, ref AutomationElement input)
+    {
+        for (int attempt = 0; attempt < 2; attempt++)
+        {
+            try
+            {
+                if (input == null) input = FindClaudeInput(root);
+                if (input == null) return "";
+                object valueObj;
+                if (input.TryGetCurrentPattern(ValuePattern.Pattern, out valueObj))
+                    return ((ValuePattern)valueObj).Current.Value ?? "";
+                return "";
+            }
+            catch (ElementNotAvailableException)
+            {
+                input = null; // the editor re-rendered; look it up again
+            }
+        }
+        return "";
+    }
+
+    // Only the strip of buttons along the bottom of the input box counts, so
+    // chat history buttons whose names quote old messages never match.
+    private static AutomationElement FindClaudeComposerButton(AutomationElement root, AutomationElement input, string[] nameContains)
+    {
+        System.Windows.Rect ir;
+        try { ir = input.Current.BoundingRectangle; }
+        catch (ElementNotAvailableException) { return null; }
+
+        var condition = new OrCondition(
+            new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Button),
+            new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.ProgressBar));
+        AutomationElementCollection all = root.FindAll(TreeScope.Descendants, condition);
+        for (int i = 0; i < all.Count; i++)
+        {
+            AutomationElement e = all[i];
+            try
+            {
+                if (e.Current.IsOffscreen) continue;
+                System.Windows.Rect r = e.Current.BoundingRectangle;
+                if (r.IsEmpty || r.Top < ir.Bottom - 60 || r.Top > ir.Bottom + 20) continue;
+                if (r.Left < ir.Left - 80 || r.Right > ir.Right + 80) continue;
+                if (ContainsAny(e.Current.Name, nameContains)) return e;
+            }
+            catch (ElementNotAvailableException)
+            {
+            }
+        }
+        return null;
     }
 
     private static void JumpToAgentAndDictate(string foreground)
@@ -1270,8 +1560,13 @@ internal static class PresenterHotkey
             if (!File.Exists(path)) return;
             var map = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(File.ReadAllText(path));
             if (map == null) return;
-            if (map.ContainsKey("UpVk")) _upVk = ToInt(map["UpVk"], _upVk);
-            if (map.ContainsKey("DownVk")) _downVk = ToInt(map["DownVk"], _downVk);
+            if (map.ContainsKey("UpVks")) _upVks = ToIntArray(map["UpVks"], _upVks);
+            if (map.ContainsKey("DownVks")) _downVks = ToIntArray(map["DownVks"], _downVks);
+            // Older configs name a single key; keep it working alongside the list.
+            if (map.ContainsKey("UpVk")) _upVks = WithKey(_upVks, ToInt(map["UpVk"], _upVk));
+            if (map.ContainsKey("DownVk")) _downVks = WithKey(_downVks, ToInt(map["DownVk"], _downVk));
+            _upVk = _upVks[0];
+            _downVk = _downVks[0];
             if (map.ContainsKey("UpAction"))
                 _upAction = KeyCombo.Parse(Convert.ToString(map["UpAction"], CultureInfo.InvariantCulture), _upAction);
             if (map.ContainsKey("CodexUpAction"))
@@ -1320,10 +1615,46 @@ internal static class PresenterHotkey
             if (map.ContainsKey("ChatGptWebTitleContains"))
                 _chatGptWebTitleContains = ToStringArray(map["ChatGptWebTitleContains"], _chatGptWebTitleContains);
             if (map.ContainsKey("JumpToAgentFromOtherApps")) _jumpToAgentFromOtherApps = ToBool(map["JumpToAgentFromOtherApps"], _jumpToAgentFromOtherApps);
+            if (map.ContainsKey("ClaudeDictationStopButtonNames"))
+                _claudeDictationStopButtonNames = ToStringArray(map["ClaudeDictationStopButtonNames"], _claudeDictationStopButtonNames);
+            if (map.ContainsKey("ClaudeDictationMinWaitMs")) _claudeDictationMinWaitMs = ToInt(map["ClaudeDictationMinWaitMs"], _claudeDictationMinWaitMs);
+            if (map.ContainsKey("ClaudeDictationSettleMs")) _claudeDictationSettleMs = ToInt(map["ClaudeDictationSettleMs"], _claudeDictationSettleMs);
+            if (map.ContainsKey("ClaudeDictationMaxWaitMs")) _claudeDictationMaxWaitMs = ToInt(map["ClaudeDictationMaxWaitMs"], _claudeDictationMaxWaitMs);
         }
         catch (Exception ex)
         {
             Log("Config load error (using defaults): " + ex.Message);
+        }
+    }
+
+    // Edits one boolean in place so the rest of the user's hand-edited config
+    // (formatting, key order, unknown keys) survives.
+    private static void SaveConfigBool(string key, bool value)
+    {
+        try
+        {
+            string text = File.Exists(_configPath) ? File.ReadAllText(_configPath) : "{\r\n}\r\n";
+            string literal = value ? "true" : "false";
+            var existing = new Regex("(\"" + Regex.Escape(key) + "\"\\s*:\\s*)\"?(true|false)\"?", RegexOptions.IgnoreCase);
+            if (existing.IsMatch(text))
+            {
+                text = existing.Replace(text, "${1}" + literal, 1);
+            }
+            else
+            {
+                int brace = text.IndexOf('{');
+                if (brace < 0) throw new InvalidDataException("config has no opening brace");
+                string newline = text.Contains("\r\n") ? "\r\n" : "\n";
+                bool empty = text.Substring(brace + 1).TrimStart().StartsWith("}");
+                text = text.Insert(brace + 1, newline + "    \"" + key + "\": " + literal + (empty ? "" : ","));
+            }
+
+            File.WriteAllText(_configPath, text);
+            Log("Saved " + key + "=" + literal + " to " + _configPath);
+        }
+        catch (Exception ex)
+        {
+            Log("Config save error for " + key + ": " + ex.Message);
         }
     }
 
@@ -1339,6 +1670,34 @@ internal static class PresenterHotkey
             return (int)Math.Round(Convert.ToDouble(value, CultureInfo.InvariantCulture));
         }
         catch { return fallback; }
+    }
+
+    private static int[] ToIntArray(object value, int[] fallback)
+    {
+        string[] items = ToStringArray(value, null);
+        if (items == null) return fallback;
+        var list = new List<int>();
+        foreach (var item in items)
+        {
+            int vk = ToInt(item, 0);
+            if (vk != 0 && !list.Contains(vk)) list.Add(vk);
+        }
+        return list.Count > 0 ? list.ToArray() : fallback;
+    }
+
+    private static int[] WithKey(int[] keys, int vk)
+    {
+        if (vk == 0 || Array.IndexOf(keys, vk) >= 0) return keys;
+        var list = new List<int>(keys);
+        list.Insert(0, vk);
+        return list.ToArray();
+    }
+
+    private static string VkList(int[] keys)
+    {
+        var parts = new List<string>();
+        foreach (int vk in keys) parts.Add("0x" + vk.ToString("X2"));
+        return string.Join("/", parts.ToArray());
     }
 
     private static bool ToBool(object value, bool fallback)
@@ -1599,6 +1958,23 @@ internal static class PresenterHotkey
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int count);
+
+    private const int WM_INPUT = 0x00FF;
+    private const int RIDEV_INPUTSINK = 0x00000100;
+    private static readonly IntPtr HWND_MESSAGE = new IntPtr(-3);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct RAWINPUTDEVICE
+    {
+        public ushort usUsagePage;
+        public ushort usUsage;
+        public int dwFlags;
+        public IntPtr hwndTarget;
+    }
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool RegisterRawInputDevices(RAWINPUTDEVICE[] devices, uint count, uint size);
 
     private const int GW_OWNER = 4;
     private const int GWL_EXSTYLE = -20;
