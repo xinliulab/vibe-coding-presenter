@@ -1,6 +1,6 @@
 {
-  "UpVk": "0x26",
-  "DownVk": "0x28",
+  "UpVks": ["0x26", "0x21"],
+  "DownVks": ["0x28", "0x22"],
   "UpAction": "Ctrl+Shift+D",
   "CodexUpAction": "Ctrl+Shift+D",
   "CodexHoldProcessNames": ["codex", "chatgpt"],

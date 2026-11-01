@@ -22,7 +22,7 @@ This project maps a presenter remote's Up/Down buttons into that loop, so you ca
 
 ### What it does
 
-Vibe Coding Presenter is a lightweight Windows tray app written in C#/.NET Framework. It listens for double-presses from a presenter remote that sends `ArrowUp` and `ArrowDown` keyboard events.
+Vibe Coding Presenter is a lightweight Windows tray app written in C#/.NET Framework. It listens for double-presses from a presenter remote that sends `ArrowUp`/`ArrowDown` or `PageUp`/`PageDown` keyboard events.
 
 - Double Up starts or stops voice input. If you are in some other app (mail, a PDF, a browser page), it first jumps back to the AI agent you used last, so you never have to move the mouse back to the input box.
 - Double Down sends the message. In ChatGPT, Codex, Claude, and PRISM, the app first tries to click the real `Send` button through Windows UI Automation, then falls back to `Enter`.
@@ -151,8 +151,8 @@ Sample behavior:
 
 ```json
 {
-  "UpVk": "0x26",
-  "DownVk": "0x28",
+  "UpVks": ["0x26", "0x21"],
+  "DownVks": ["0x28", "0x22"],
   "UpAction": "Ctrl+Shift+D",
   "CodexUpAction": "Ctrl+Shift+D",
   "CodexHoldProcessNames": ["codex", "chatgpt"],
@@ -194,8 +194,8 @@ If PRISM has a different browser title on your machine, add another keyword to `
 ### Notes and limitations
 
 - Windows only.
-- Designed for presenter remotes that emit `ArrowUp` and `ArrowDown`.
-- While running, normal `ArrowUp` and `ArrowDown` keyboard events are intercepted globally. Use Pause or Exit from the tray menu when you need normal arrow-key navigation.
+- Works with presenter remotes that emit `ArrowUp`/`ArrowDown` or `PageUp`/`PageDown` (both are on by default; change `UpVks`/`DownVks` for other keys). Several presenters can be used at once.
+- While running, normal `ArrowUp`/`ArrowDown` and `PageUp`/`PageDown` keyboard events are intercepted globally. Use Pause or Exit from the tray menu when you need normal arrow-key navigation.
 - Windows silently removes a keyboard hook that ever responds too slowly (this happens easily right after boot), and the remote's arrows then leak into apps again (for example, recalling old prompts). A watchdog compares the hook against raw keyboard input and reinstalls the hook within about a second of the first missed key. If the remote still misbehaves, right-click the tray icon and choose Restart hook.
 - PRISM support depends on Windows UI Automation being able to see the input box.
 - Windows voice typing (used for Claude and PRISM) may not insert text while a third-party IME such as Sogou Pinyin is active. Use an English keyboard or Microsoft Pinyin.
@@ -236,7 +236,7 @@ Ctrl+Shift+D + Enter
 
 ### 它做什么
 
-Vibe Coding Presenter 是一个轻量的 Windows 托盘程序，用 C#/.NET Framework 编写。它监听遥控器发出的 `ArrowUp` 和 `ArrowDown` 键盘事件，并识别“双击”。
+Vibe Coding Presenter 是一个轻量的 Windows 托盘程序，用 C#/.NET Framework 编写。它监听遥控器发出的 `ArrowUp`/`ArrowDown` 或 `PageUp`/`PageDown` 键盘事件，并识别“双击”。
 
 - 向上双击：启动或停止语音输入。如果你正在用别的程序（邮件、PDF、网页等），它会先自动跳回你最近用的 AI 助手，不用再把鼠标移回输入框。
 - 向下双击：发送消息。在 ChatGPT、Codex、Claude 和 PRISM 里，程序会先通过 Windows UI Automation 点击真正的 `Send` 按钮；如果找不到按钮，再回退到 `Enter`。
@@ -365,8 +365,8 @@ config.sample.json
 
 ```json
 {
-  "UpVk": "0x26",
-  "DownVk": "0x28",
+  "UpVks": ["0x26", "0x21"],
+  "DownVks": ["0x28", "0x22"],
   "UpAction": "Ctrl+Shift+D",
   "CodexUpAction": "Ctrl+Shift+D",
   "CodexHoldProcessNames": ["codex", "chatgpt"],
@@ -408,8 +408,8 @@ config.sample.json
 ### 注意事项
 
 - 目前仅支持 Windows。
-- 适合会发送 `ArrowUp` 和 `ArrowDown` 的演示遥控器。
-- 程序运行时会全局拦截普通 `ArrowUp` 和 `ArrowDown`。如果你需要正常使用方向键，可以从托盘菜单 Pause 或 Exit。
+- 适合会发送 `ArrowUp`/`ArrowDown` 或 `PageUp`/`PageDown` 的演示遥控器（两种默认都支持；其他按键可改 `UpVks`/`DownVks`）。可以同时用好几支激光笔。
+- 程序运行时会全局拦截普通 `ArrowUp`/`ArrowDown` 和 `PageUp`/`PageDown`。如果你需要正常使用这些键，可以从托盘菜单 Pause 或 Exit。
 - Windows 会悄悄移除响应过慢的键盘钩子（刚开机电脑很忙时很容易发生），之后遥控器的方向键又会直接进入程序（比如把以前的聊天记录调出来）。程序带有看门狗：用 Raw Input 对照钩子，发现漏掉按键后大约一秒内自动重装钩子。如果遥控器还是不正常，右键托盘图标，点击 Restart hook。
 - PRISM 支持依赖 Windows UI Automation 能否识别页面输入框。
 - Windows 语音输入（Claude 和 PRISM 用的就是它）在搜狗拼音等第三方输入法下可能打不出字，请切到英文键盘或微软拼音。
