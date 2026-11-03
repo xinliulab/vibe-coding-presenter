@@ -1,0 +1,17 @@
+{
+  "AutoDetectPresenters": true,
+  "KeyboardNameKeywords": ["keyboard", "keys", "kbd"],
+  "PresenterDevices": [],
+  "IgnoreDevices": [],
+  "AgentBundleIDs": ["com.anthropic.claudefordesktop"],
+  "DictationShortcut": "Cmd+D",
+  "SendKey": "Enter",
+  "JumpToAgentFromOtherApps": true,
+  "RequireDoublePress": true,
+  "DoublePressMs": 900,
+  "ActionCooldownMs": 800,
+  "ActivateTimeoutMs": 2000,
+  "FocusDelayMs": 300,
+  "StopBeforeSendMs": 1500,
+  "DictationStateTimeoutSec": 600
+}

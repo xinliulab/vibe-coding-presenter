@@ -4,7 +4,7 @@
 
 ## English
 
-Vibe Coding Presenter turns a cheap wireless presenter remote into a voice-first vibe coding controller for Windows: talk to your AI coding agent and send prompts from across the room, without touching the keyboard.
+Vibe Coding Presenter turns a cheap wireless presenter remote into a voice-first vibe coding controller for Windows and macOS: talk to your AI coding agent and send prompts from across the room, without touching the keyboard.
 
 The core idea is simple: before coding agents and AI writing tools, the most important productivity shortcut was often `Ctrl+C` then `Ctrl+V`. In a voice-first AI workflow, the new high-frequency loop is becoming:
 
@@ -89,7 +89,7 @@ Windows voice typing may hear you but insert nothing when a third-party IME such
 
 When Claude's own dictation is selected, Double Up starts or stops dictation (so you can pause and think), and Double Down always sends. Claude streams a rough transcript while you talk and rewrites it with context about 0.5-1 second after dictation stops (often turning English guesses into the Chinese you actually said), and it hides its Send button while dictating. So Double Down stops dictation first, waits for the rewrite (at least `ClaudeDictationMinWaitMs`, and until the text has been quiet for `ClaudeDictationSettleMs`), sends, and sends again if the input box did not empty.
 
-This tool only runs on Windows. On a Mac, keep using Claude's built-in dictation directly.
+On a Mac, use the macOS version in `mac/` (see [macOS](#macos) below). It uses Claude's own dictation shortcut, `Cmd+D`.
 
 By default, this Claude rule is desktop-app-only and will not trigger inside common browsers, even if a browser tab title contains the word "Claude".
 
@@ -130,6 +130,37 @@ To uninstall the startup shortcut:
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\Uninstall-PresenterHotkey.ps1
 ```
+
+### macOS
+
+The `mac/` folder has a separate macOS version: a small menu bar app written in Swift. It currently targets the Claude desktop app.
+
+- Double Up: if Claude is in front, toggles Claude's own dictation with `Cmd+D` (Claude's built-in shortcut on Mac). From any other app, it first brings Claude to the front, then starts dictation.
+- Double Down: if dictation is on, stops it with `Cmd+D`, waits `StopBeforeSendMs` (default 1500 ms) for the last words to land, then presses `Enter`. Otherwise it just presses `Enter`. In another app, Double Down does nothing unless dictation is still on.
+- Only the presenter is affected. The app uses the built-in `hidutil` tool to remap the presenter's Up/Down (and Page Up/Page Down) keys to F18/F19 for that one device, then listens for F18/F19. The laptop keyboard's arrow keys keep working. Pause in the menu bar menu, or quitting the app, gives the presenter its normal keys back, for presenting slides.
+- Any presenter works without setup, and several can be connected at once. Presenter receivers rarely call themselves presenters (one shows up as `2.4G Mouse`, another as `ZY RMC`), so the app treats every external keyboard-type device as a presenter unless its name contains `keyboard`, `keys`, or `kbd`. A wrong guess on a mouse receiver does no harm, because a mouse never sends arrow or page keys. A newly plugged-in presenter is picked up within a second.
+
+Install from the project folder:
+
+```bash
+./mac/install.sh              # build, install to ~/Applications, and start
+./mac/install.sh --at-login   # also start automatically at login
+./mac/stop.sh
+./mac/uninstall.sh
+```
+
+The first time, allow `VibeCodingPresenter` in System Settings > Privacy & Security > Accessibility. The app is ad-hoc signed, so macOS may ask again after a rebuild.
+
+To see or change which devices count as presenters, open the menu bar icon > **Presenters**: a checkmark means the device is used as a presenter, and clicking a device switches it. Use this if an external keyboard without "keyboard" in its name (for example a Logitech `USB Receiver`) loses its arrow keys. The choice is saved to `~/Library/Application Support/VibeCodingPresenter/config.json`:
+
+```json
+"PresenterDevices": [{"VendorID": "0x25A7", "ProductID": "0x1048"}],
+"IgnoreDevices": [{"VendorID": "0x046D", "ProductID": "0xC548"}]
+```
+
+`PresenterDevices` are always presenters and `IgnoreDevices` never are. Set `"AutoDetectPresenters": false` to use only `PresenterDevices`. From Terminal, `~/Applications/VibeCodingPresenter.app/Contents/MacOS/VibeCodingPresenter --list-devices` shows every device and how it is treated.
+
+The other settings are listed in `mac/config.sample.json`. The log is `~/Library/Logs/VibeCodingPresenter.log`.
 
 ### Configuration
 
@@ -193,7 +224,7 @@ If PRISM has a different browser title on your machine, add another keyword to `
 
 ### Notes and limitations
 
-- Windows only.
+- The Windows app is in the project root. The macOS app is in `mac/` and currently supports the Claude desktop app only.
 - Works with presenter remotes that emit `ArrowUp`/`ArrowDown` or `PageUp`/`PageDown` (both are on by default; change `UpVks`/`DownVks` for other keys). Several presenters can be used at once.
 - While running, normal `ArrowUp`/`ArrowDown` and `PageUp`/`PageDown` keyboard events are intercepted globally. Use Pause or Exit from the tray menu when you need normal arrow-key navigation.
 - Windows silently removes a keyboard hook that ever responds too slowly (this happens easily right after boot), and the remote's arrows then leak into apps again (for example, recalling old prompts). A watchdog compares the hook against raw keyboard input and reinstalls the hook within about a second of the first missed key. If the remote still misbehaves, right-click the tray icon and choose Restart hook.
@@ -218,7 +249,7 @@ Copy/paste was the signature gesture of desktop productivity. Voice-controlled A
 
 ## 中文
 
-Vibe Coding Presenter 是一个 Windows 托盘小工具，可以把普通翻页激光笔/演示遥控器变成 vibe coding 语音控制器：不用碰键盘，站着、坐远一点也能直接对 AI 编程助手说话、发送指令。
+Vibe Coding Presenter 是一个 Windows 托盘小工具（另有 macOS 版，见下文），可以把普通翻页激光笔/演示遥控器变成 vibe coding 语音控制器：不用碰键盘，站着、坐远一点也能直接对 AI 编程助手说话、发送指令。
 
 核心想法很简单：在 Codex、ChatGPT 这类工具出现以前，最重要的生产力快捷键常常是 `Ctrl+C` 和 `Ctrl+V`。但在语音优先的 AI 工作流里，新的高频动作正在变成：
 
@@ -303,7 +334,7 @@ Claude 自带的语音输入在 Windows 上效果不太好，所以当前台是 
 
 选用 Claude 自带语音时，向上双击负责开始/停止录音（中途可以停下来想一想），向下双击一定发送。Claude 边听边显示粗略的文字，停止听写约 0.5–1 秒后才会结合上下文重写一遍（经常把识别错的英文改回你说的中文），而且录音时会隐藏 Send 按钮。所以向下双击会先停止录音，等 Claude 重写（至少 `ClaudeDictationMinWaitMs`，并且文字静止 `ClaudeDictationSettleMs`），然后发送；如果输入框没清空，再补发一次。
 
-这个工具只在 Windows 上运行。在 Mac 上直接使用 Claude 自带的语音输入即可。
+Mac 上请用 `mac/` 文件夹里的 macOS 版（见下文 macOS 一节），它用的是 Claude 自带的语音快捷键 `Cmd+D`。
 
 默认情况下，这条 Claude 规则只针对桌面应用生效；如果普通浏览器网页标题里有 Claude，它不会触发，避免误把 Edge/Chrome 里的 `Ctrl+D` 变成收藏网页。
 
@@ -344,6 +375,37 @@ powershell -ExecutionPolicy Bypass -File .\Stop-PresenterHotkey.ps1
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\Uninstall-PresenterHotkey.ps1
 ```
+
+### macOS
+
+`mac/` 文件夹里是单独的 macOS 版：一个用 Swift 写的菜单栏小程序，目前针对 Claude 桌面应用。
+
+- 向上双击：如果前台是 Claude，就用 `Cmd+D`（Claude 在 Mac 上自带的语音快捷键）开始或停止语音输入。如果前台是别的程序，先把 Claude 切到最前面，再开始语音输入。
+- 向下双击：语音输入开着时，先用 `Cmd+D` 停止，等 `StopBeforeSendMs`（默认 1500 毫秒）让最后一句落到输入框里，再按 `Enter` 发送；语音输入没开时直接按 `Enter`。在别的程序里，除非语音输入还开着，否则向下双击不做任何事。
+- 只影响翻页笔。程序用系统自带的 `hidutil`，只把翻页笔这一个设备的上/下键（以及 Page Up/Page Down）改成 F18/F19，再监听 F18/F19。笔记本键盘上的方向键照常使用。在菜单栏菜单里点 Pause，或者退出程序，翻页笔就恢复成普通翻页键，可以正常放幻灯片。
+- 任何翻页笔插上就能用，不用设置，也可以同时连好几支。翻页笔的接收器很少自称翻页笔（有的显示成 `2.4G Mouse`，有的是 `ZY RMC`），所以程序把所有外接的键盘类设备都当成翻页笔，除非名字里有 `keyboard`、`keys` 或 `kbd`。就算把鼠标接收器误认成翻页笔也没关系，因为鼠标不会发方向键和翻页键。新插上的翻页笔一秒内就能用。
+
+在项目目录里安装：
+
+```bash
+./mac/install.sh              # 编译、安装到 ~/Applications 并启动
+./mac/install.sh --at-login   # 同时设置开机自动启动
+./mac/stop.sh
+./mac/uninstall.sh
+```
+
+第一次运行时，要在 系统设置 > 隐私与安全性 > 辅助功能 里允许 `VibeCodingPresenter`。程序是本地临时签名的，重新编译后 macOS 可能会要求再授权一次。
+
+想查看或修改哪些设备算翻页笔，点菜单栏图标 > **Presenters**：打勾的设备就是翻页笔，点一下就切换。如果某个外接键盘名字里没有 keyboard（比如罗技的 `USB Receiver`），方向键不好用了，就在这里把它的勾去掉。选择会保存到 `~/Library/Application Support/VibeCodingPresenter/config.json`：
+
+```json
+"PresenterDevices": [{"VendorID": "0x25A7", "ProductID": "0x1048"}],
+"IgnoreDevices": [{"VendorID": "0x046D", "ProductID": "0xC548"}]
+```
+
+`PresenterDevices` 里的设备一定算翻页笔，`IgnoreDevices` 里的一定不算。设成 `"AutoDetectPresenters": false` 就只用 `PresenterDevices`。在终端运行 `~/Applications/VibeCodingPresenter.app/Contents/MacOS/VibeCodingPresenter --list-devices` 可以看到所有设备以及它们是否被当成翻页笔。
+
+其他设置见 `mac/config.sample.json`。日志在 `~/Library/Logs/VibeCodingPresenter.log`。
 
 ### 配置
 
@@ -407,7 +469,7 @@ config.sample.json
 
 ### 注意事项
 
-- 目前仅支持 Windows。
+- Windows 版在项目根目录；macOS 版在 `mac/` 文件夹，目前只支持 Claude 桌面应用。
 - 适合会发送 `ArrowUp`/`ArrowDown` 或 `PageUp`/`PageDown` 的演示遥控器（两种默认都支持；其他按键可改 `UpVks`/`DownVks`）。可以同时用好几支激光笔。
 - 程序运行时会全局拦截普通 `ArrowUp`/`ArrowDown` 和 `PageUp`/`PageDown`。如果你需要正常使用这些键，可以从托盘菜单 Pause 或 Exit。
 - Windows 会悄悄移除响应过慢的键盘钩子（刚开机电脑很忙时很容易发生），之后遥控器的方向键又会直接进入程序（比如把以前的聊天记录调出来）。程序带有看门狗：用 Raw Input 对照钩子，发现漏掉按键后大约一秒内自动重装钩子。如果遥控器还是不正常，右键托盘图标，点击 Restart hook。
